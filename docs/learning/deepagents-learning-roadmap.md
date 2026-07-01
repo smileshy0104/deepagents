@@ -13,6 +13,80 @@
 - 使用 LangSmith 做 tracing、评测和回归分析。
 - 能阅读 Deep Agents 源码，理解核心 middleware、backend 和 deploy CLI。
 
+## README 阅读笔记：Deep Agents 的项目定位
+
+根目录 `README.md` 给 Deep Agents 的定位是：
+
+```text
+The batteries-included agent harness.
+```
+
+可以理解为：Deep Agents 是一个“开箱即用、默认拥有（langchain和langgraph）能力较完整的 Agent 框架”。它不是替代 LangChain 或 LangGraph，而是在它们之上提供一层更完整的 agent harness。
+
+三者关系：
+
+```text
+LangGraph = runtime，负责状态、持久化、streaming、checkpoint、interrupt。
+LangChain = model、tool、agent 等基础抽象。
+Deep Agents = 在 LangChain / LangGraph 之上封装更完整的 agent harness。
+```
+
+其中 `runtime` 可以理解为 Agent 应用真正执行时的运行时层：它负责状态如何传递、执行进度如何保存、过程如何流式输出、任务如何中断和恢复。详细概念见 `docs/learning/agent-concepts.md` 中的 `LangGraph Runtime`。
+
+README 中强调的核心原则：
+
+- Opinionated：默认配置面向“长任务、多步骤”复杂任务。
+- Extensible：可以替换或覆盖任意部分，不需要 fork 项目。
+- Model-agnostic：只要模型支持 tool calling，就可以接入 frontier、open-weight 或本地模型。
+- Production-ready：生产能力来自 LangGraph 的 streaming、persistence、checkpointing，以及 LangSmith 的 tracing、evaluation、deployment。
+
+README 中列出的核心能力：
+
+- Sub-agents：把任务委派给上下文隔离的子代理。
+- Filesystem：通过可插拔 backend 读、写、编辑、搜索文件。
+- Context management：总结长线程，并把大型工具输出卸载到文件。
+- Shell access：在 sandbox 中执行命令。
+- Persistent memory：跨会话记忆。
+- Human-in-the-loop：工具调用前允许人工批准、编辑或拒绝。
+- Skills：按需加载可复用行为。
+- Tools：支持自定义函数和 MCP server。
+
+README 的 Quickstart 说明主入口是 `create_deep_agent()`：
+
+```python
+from deepagents import create_deep_agent
+
+agent = create_deep_agent(
+    model="openai:gpt-5.5",
+    tools=[my_custom_tool],
+    system_prompt="You are a research assistant.",
+)
+result = agent.invoke({"messages": "Research LangGraph and write a summary"})
+```
+
+因此阅读源码时，应该围绕 `create_deep_agent()` 去理解它如何组装：
+
+- model。
+- system prompt。
+- tools。
+- middleware。
+- backend。
+- subagents。
+- skills。
+- memory。
+- LangGraph runtime 参数。
+
+README 的安全提醒也很关键：Deep Agents 遵循 “trust the LLM” 模型。Agent 可以做它的 tools 允许它做的任何事，所以安全边界应该放在 tool、permission、sandbox 和 backend 层，而不是期待模型自我约束。
+
+源码阅读入口：
+
+- `libs/deepagents/deepagents/graph.py`：`create_deep_agent()` 主入口。
+- `libs/deepagents/deepagents/middleware/filesystem.py`：文件系统工具。
+- `libs/deepagents/deepagents/middleware/subagents.py`：子代理。
+- `libs/deepagents/deepagents/middleware/skills.py`：skills。
+- `libs/deepagents/deepagents/middleware/memory.py`：memory。
+- `libs/deepagents/deepagents/backends/`：backend 抽象和实现。
+
 ## 推荐开源项目
 
 建议按照学习价值和难度递进阅读：
