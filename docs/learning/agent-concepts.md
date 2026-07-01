@@ -297,3 +297,293 @@ LangGraph = 让这些能力以可靠、可恢复、可观测的方式运行。
 ### 简短总结
 
 LangGraph 是构建 Agent 应用时的运行时层。它让 Agent 不只是一次性函数调用，而是可以拥有状态、可持续运行、可中断、可恢复、可观察的系统。
+
+## Deep Agents Architecture
+
+### 一句话解释
+
+Deep Agents 的架构可以理解为三层：
+
+```text
+Deep Agents = opinionated harness：默认能力、middleware、backends、profiles
+LangChain = agent abstraction：model + tools + middleware -> agent loop
+LangGraph = runtime：state、checkpoints、streaming、interrupts
+```
+
+Deep Agents 不重新发明 runtime，而是在 LangChain `create_agent()` 和 LangGraph runtime 之上，提供一套更完整、更适合长任务的 agent harness。
+
+### 三层架构
+
+#### LangGraph：运行时层
+
+LangGraph 负责 Agent 或 workflow 的运行机制：
+
+- 状态在步骤之间如何传递。
+- checkpoint 如何保存。
+- streaming 如何暴露执行过程。
+- interrupt 如何暂停和恢复任务。
+
+它关注的是“这个 Agent 系统如何可靠运行”。
+
+#### LangChain：Agent 抽象层
+
+LangChain 的 `create_agent()` 在 LangGraph 之上提供 agent 抽象。
+
+调用者主要描述：
+
+- 使用什么 model。
+- 有哪些 tools。
+- 使用哪些 middleware。
+
+LangChain 会构建 agent loop：
+
+```text
+调用模型
+→ 模型决定是否调用工具
+→ 执行工具
+→ 工具结果回到消息历史
+→ 再次调用模型
+→ 直到模型输出最终答案
+```
+
+它关注的是“模型、工具和 middleware 如何组成一个 Agent”。
+
+#### Deep Agents：Opinionated Harness 层
+
+Deep Agents 位于最上层，提供默认组装好的长任务 Agent 能力：
+
+- planning。
+- filesystem。
+- subagents。
+- skills。
+- memory。
+- summarization。
+- backend。
+- profiles。
+- human-in-the-loop。
+
+它关注的是“如何把常见长任务 Agent 所需能力打包好，让用户开箱即用”。
+
+### Construction：构建阶段
+
+当应用代码调用：
+
+```python
+from deepagents import create_deep_agent
+
+agent = create_deep_agent(...)
+```
+
+就进入 construction 阶段。
+
+`create_deep_agent()` 大致会做这些事：
+
+1. 解析请求的 chat model，以及适用的 provider profile / harness profile。
+2. 解析 backend，用于 filesystem、skills、memory 和 `execute`。
+3. 组装主 Agent 的 middleware stack。
+4. 构建默认 `general-purpose` subagent 和调用者传入的 subagents。
+5. 组合 system prompt：用户指令、SDK 默认提示词、profile 提示词。
+6. 调用 LangChain 的 `create_agent(...)`，生成最终可运行的 LangGraph graph。
+
+因此，源码阅读的主入口是：
+
+```text
+libs/deepagents/deepagents/graph.py
+```
+
+### Execution：执行阶段
+
+当返回的 graph 被 `invoke()`、`stream()` 或其他运行接口调用时，就进入 execution 阶段。
+
+执行流程可以理解为：
+
+```text
+LangGraph 读取当前 state
+→ 准备 messages、system prompt、tools
+→ 模型生成回答或 tool call
+→ 如果有 tool call，则执行工具
+→ 工具结果写回 state
+→ 再次调用模型
+→ 直到模型输出最终答案
+```
+
+Deep Agents 主要通过 middleware 改变这个执行过程。
+
+### Middleware
+
+Middleware 是插入 agent loop 中的行为扩展点。
+
+它和普通 tool 的区别很重要：
+
+```text
+tool = 模型选择调用后才执行
+middleware = 可以影响模型调用前后、工具执行前后、state 准备过程
+```
+
+Middleware 可以做普通 tool 做不到的事情，例如：
+
+- 在模型请求前增加或移除 tools。
+- 向 system prompt 注入 filesystem、memory、skills、subagent 说明。
+- 在上下文过长时 summarization / compaction。
+- 把大型工具输出卸载到文件。
+- 给 graph state 增加 typed fields。
+- 在文件系统工具执行前做权限检查。
+
+### Middleware Stack
+
+Deep Agents 的 middleware stack 可以分为三段：
+
+#### Base scaffolding
+
+基础脚手架，提供 Deep Agent 的默认能力：
+
+- planning。
+- filesystem access。
+- subagent delegation。
+- summarization。
+- request cleanup。
+
+#### Caller middleware
+
+调用者传入的自定义 middleware。
+
+用于在不重写整个 harness 的情况下扩展行为。
+
+#### Profile and tail middleware
+
+根据最终模型、provider 和工具表面做调整：
+
+- provider-specific behavior。
+- tool exclusions。
+- prompt caching。
+- memory injection。
+- human approval。
+
+需要注意：subagents 也有自己的 middleware stack。如果某个行为只在 delegated work 中出现，应先确认是 main-agent stack、declarative subagent、compiled subagent，还是 async / remote subagent 触发的。
+
+### Tool Surface
+
+Tool surface 指模型在一次请求中“看得见、可以选择调用”的工具集合。
+
+Deep Agents 中，tool surface 来自多个层：
+
+- built-in middleware 注入标准工具：
+  - todo management。
+  - filesystem tools。
+  - subagent delegation。
+- 调用者通过 `tools=` 传入自定义工具。
+- backend 决定 shell execution 是否可用。
+- harness profiles 可以通过 `excluded_tools` 隐藏工具。
+- filesystem permissions 决定文件工具调用是否允许、拒绝或中断。
+
+调试工具问题时，可以按这个规则判断：
+
+```text
+工具缺失：检查 middleware assembly 和 profile exclusions。
+工具可见但调用失败：检查 backend capability 和 permission enforcement。
+```
+
+例如：
+
+- `execute` 工具不可用，可能是 backend 不支持 shell execution。
+- `read_file` 可见但失败，可能是路径、权限或 backend 实现问题。
+
+### Filesystem Access
+
+Deep Agents 的文件系统能力不是直接等同于本机磁盘读写，而是由 backend 决定。
+
+常见情况：
+
+- `StateBackend`：文件存在 LangGraph state 中，通常是 thread-scoped。
+- `FilesystemBackend`：文件映射到本地磁盘。
+- `StoreBackend`：文件或 memory 可存入 LangGraph store。
+- sandbox backend：文件和 shell execution 位于远程或隔离环境中。
+
+因此，看到 Agent 有 `read_file` / `write_file` 工具时，要继续追问：
+
+```text
+这些文件实际存在哪里？
+这个 backend 是否支持持久化？
+这个 backend 是否支持 execute？
+权限在哪里检查？
+```
+
+### State 与 Persistence
+
+Deep Agents 的 state  lives in LangGraph。
+
+它扩展了 LangChain 的 `AgentState`，定义了 `DeepAgentState`。其中 `messages` 使用 `DeltaChannel` reducer，使长线程中的 checkpoint 增长保持线性，而不是每次复制完整消息历史导致快速膨胀。
+
+持久化要分成两类理解：
+
+#### Graph state / checkpoints
+
+来自 LangGraph。
+
+保存内容包括：
+
+- conversation state。
+- message history。
+- interrupts。
+- resumability。
+
+#### Filesystem / memory persistence
+
+来自 Deep Agents backends。
+
+保存内容包括：
+
+- Agent 写入的文件。
+- memory。
+- backend 路由的数据。
+- sandbox 或本地 filesystem 中的内容。
+
+两者区别：
+
+```text
+LangGraph 持久化的是 graph 执行状态。
+Deep Agents backend 持久化的是文件、memory、shell 执行环境相关内容。
+```
+
+### Profiles
+
+Profiles 用来针对不同 provider 或 model 调整 harness 行为。
+
+例如某些模型可能需要：
+
+- 更短或不同格式的工具描述。
+- 隐藏部分工具。
+- 附加模型特定提示词。
+- 启用 prompt caching。
+
+因此，当你看到同样的 Agent 换模型后表现不同，除了模型本身能力差异，也要检查是否有 profile 改变了 prompt、middleware 或 tool surface。
+
+### 源码阅读入口
+
+根据架构文档，阅读 Deep Agents 源码可以从这些位置开始：
+
+```text
+graph.py        Agent 构建、middleware 顺序、prompt 组装、默认模型行为
+middleware/     工具可见性、prompt 注入、请求时行为
+backends/       文件持久化、shell 支持、路径路由
+profiles/       provider 或 model 特定的 harness 调整
+__init__.py     公共 API 和兼容性边界
+```
+
+阅读方法：
+
+1. 从 `create_deep_agent()` 的某个公开参数开始。
+2. 找到它安装了哪个 middleware、backend 或 profile。
+3. 继续跟踪该组件在 execution 阶段如何参与运行。
+
+### 简短总结
+
+Deep Agents 的架构核心是：
+
+```text
+LangGraph 负责可靠运行。
+LangChain 负责 agent loop 抽象。
+Deep Agents 负责把长任务 Agent 所需能力默认组装好。
+```
+
+理解 Deep Agents 时，最重要的不是只看 tools，而是看 `middleware + backend + profile` 如何共同塑造 Agent 的行为。
